@@ -1,0 +1,4 @@
+[mapping:doom_psram]
+archive: libmain.a
+entries:
+    * (extram_bss)
