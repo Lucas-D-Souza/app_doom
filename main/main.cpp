@@ -38,7 +38,6 @@ static KeyEvent key_queue[KEY_QUEUE_SIZE];
 static int key_head = 0;
 static int key_tail = 0;
 
-// Função que o LVGL usa para "Apertar botões no teclado imaginário"
 static void push_key(int pressed, unsigned char key) {
     int next = (key_head + 1) % KEY_QUEUE_SIZE;
     if (next != key_tail) {
@@ -57,9 +56,8 @@ extern "C" {
     void DG_SleepMs(uint32_t ms) { vTaskDelay(pdMS_TO_TICKS(ms)); }
     uint32_t DG_GetTicksMs() { return esp_timer_get_time() / 1000; }
     
-    // O Doom vai perguntar a essa função qual botão o usuário apertou
     int DG_GetKey(int* pressed, unsigned char* doomKey) { 
-        if (key_head == key_tail) return 0; // Fila vazia, nada apertado
+        if (key_head == key_tail) return 0; 
         *pressed = key_queue[key_tail].pressed;
         *doomKey = key_queue[key_tail].key;
         key_tail = (key_tail + 1) % KEY_QUEUE_SIZE;
@@ -84,8 +82,8 @@ extern "C" {
                 }
             }
             lv_area_t area;
-            // O jogo é centralizado nas coordenadas Y 124 a 323
-            area.x1 = 24; area.y1 = 124 + (chunk * CHUNK_LINES);
+            // Centralização Exata para Tela 410x502 (X=45, Y=151)
+            area.x1 = 45; area.y1 = 151 + (chunk * CHUNK_LINES);
             area.x2 = area.x1 + DOOM_WIDTH - 1; area.y2 = area.y1 + CHUNK_LINES - 1;
             
             if (lvgl_port_lock(pdMS_TO_TICKS(10))) {
@@ -120,41 +118,34 @@ static void clear_i2c_bus(void) {
     gpio_reset_pin(GPIO_NUM_15);
 }
 
-// Função Auxiliar para Criar Botões Virtuais
 static void create_virtual_btn(lv_obj_t* parent, int x, int y, int w, int h, const char* symbol, unsigned char key_code, lv_color_t color) {
     lv_obj_t * btn = lv_btn_create(parent);
     lv_obj_set_size(btn, w, h);
     lv_obj_align(btn, LV_ALIGN_TOP_LEFT, x, y);
     lv_obj_set_style_bg_color(btn, color, 0);
-    lv_obj_set_style_bg_opa(btn, LV_OPA_40, 0); // 40% de Transparência
+    lv_obj_set_style_bg_opa(btn, LV_OPA_40, 0); 
     lv_obj_set_style_radius(btn, 15, 0);
     
     lv_obj_t * lbl = lv_label_create(btn);
     lv_label_set_text(lbl, symbol);
     lv_obj_center(lbl);
 
-    // Envia o comando de apertar tecla ao tocar no botão
     lv_obj_add_event_cb(btn, [](lv_event_t * e) {
         unsigned char k = (unsigned char)(uintptr_t)lv_event_get_user_data(e);
         push_key(1, k);
     }, LV_EVENT_PRESSED, (void*)(uintptr_t)key_code);
 
-    // Envia o comando de soltar tecla ao tirar o dedo
     lv_obj_add_event_cb(btn, [](lv_event_t * e) {
         unsigned char k = (unsigned char)(uintptr_t)lv_event_get_user_data(e);
         push_key(0, k);
     }, LV_EVENT_RELEASED, (void*)(uintptr_t)key_code);
     
-    // Trava de Segurança: Solta a tecla se o dedo escorregar pra fora do botão
     lv_obj_add_event_cb(btn, [](lv_event_t * e) {
         unsigned char k = (unsigned char)(uintptr_t)lv_event_get_user_data(e);
         push_key(0, k);
     }, LV_EVENT_PRESS_LOST, (void*)(uintptr_t)key_code);
 }
 
-// =======================================================
-// O INÍCIO DO SISTEMA
-// =======================================================
 extern "C" void app_main(void) {
     clear_i2c_bus();
 
@@ -172,6 +163,10 @@ extern "C" void app_main(void) {
     gpio_config(&io_conf);
 
     bsp_display_start();
+    
+    // [NOVO] Atraso vital para impedir a "Corrida" contra a placa de vídeo
+    vTaskDelay(pdMS_TO_TICKS(500)); 
+
     i2c_master_bus_handle_t i2c_bus = bsp_i2c_get_handle();
     if (i2c_bus == NULL) {
         i2c_master_bus_config_t i2c_mst_config = {};
@@ -185,36 +180,35 @@ extern "C" void app_main(void) {
     }
 
     if (bsp_display_lock(pdMS_TO_TICKS(100))) {
-        lv_obj_t * scr = lv_screen_active();
+        lv_obj_t * scr = lv_scr_act(); // [CORRIGIDO] Chamada mais segura do LVGL
         lv_obj_set_style_bg_color(scr, lv_color_black(), 0);
         
         // ==========================================
-        // DESENHO DO GAMEPAD VIRTUAL (Nas faixas pretas)
+        // GAMEPAD VIRTUAL PARA TELA 410x502
         // ==========================================
-        // Doom Keys Mapeadas (doomkeys.h)
         #define KEY_RIGHTARROW 0xae
         #define KEY_LEFTARROW  0xac
         #define KEY_UPARROW    0xad
         #define KEY_DOWNARROW  0xaf
-        #define KEY_RCTRL      (0x80+0x1d) // Fire
+        #define KEY_RCTRL      (0x80+0x1d) 
         
-        // FAIXA SUPERIOR (Y = 10 a 70) -> Ações
-        create_virtual_btn(scr, 10,  10, 80, 60, "FIRE", KEY_RCTRL, lv_color_hex(0xFF3333));
-        create_virtual_btn(scr, 100, 10, 80, 60, "USE",  ' ',       lv_color_hex(0x33FF33)); // Espaço = Abrir portas
-        create_virtual_btn(scr, 190, 10, 80, 60, "ENTER", 13,       lv_color_hex(0x3333FF)); // Confirmar no Menu
-        create_virtual_btn(scr, 280, 10, 70, 60, "ESC",   27,       lv_color_hex(0xAAAAAA)); // Menu do Jogo
+        // BOTÕES DE AÇÃO SUPERIORES (Y = 40, mais espaço para os dedos)
+        create_virtual_btn(scr, 20,  40, 80, 70, "FIRE",  KEY_RCTRL, lv_color_hex(0xFF3333));
+        create_virtual_btn(scr, 115, 40, 80, 70, "USE",   ' ',       lv_color_hex(0x33FF33)); 
+        create_virtual_btn(scr, 210, 40, 80, 70, "ENTER", 13,        lv_color_hex(0x3333FF)); 
+        create_virtual_btn(scr, 305, 40, 85, 70, "ESC",   27,        lv_color_hex(0xAAAAAA)); 
         
-        // FAIXA INFERIOR (Y = 325 a 448) -> Direcional (D-PAD)
-        int cx = 184; // Centro horizontal da tela (368/2)
-        int dpad_y = 350; // Começa abaixo da zona do jogo
-        create_virtual_btn(scr, cx - 85, dpad_y + 15, 60, 60, LV_SYMBOL_LEFT,  KEY_LEFTARROW,  lv_color_hex(0x555555));
-        create_virtual_btn(scr, cx + 25, dpad_y + 15, 60, 60, LV_SYMBOL_RIGHT, KEY_RIGHTARROW, lv_color_hex(0x555555));
-        create_virtual_btn(scr, cx - 30, dpad_y - 20, 60, 60, LV_SYMBOL_UP,    KEY_UPARROW,    lv_color_hex(0x555555));
-        create_virtual_btn(scr, cx - 30, dpad_y + 50, 60, 60, LV_SYMBOL_DOWN,  KEY_DOWNARROW,  lv_color_hex(0x555555));
+        // D-PAD INFERIOR (Formato de Cruz espaçosa para não errar o toque)
+        int cx = 205; // Metade da tela de 410
+        int dpad_y = 430; // Y Base
+        create_virtual_btn(scr, cx - 110, dpad_y - 30, 70, 70, LV_SYMBOL_LEFT,  KEY_LEFTARROW,  lv_color_hex(0x555555));
+        create_virtual_btn(scr, cx + 40,  dpad_y - 30, 70, 70, LV_SYMBOL_RIGHT, KEY_RIGHTARROW, lv_color_hex(0x555555));
+        create_virtual_btn(scr, cx - 35,  dpad_y - 75, 70, 70, LV_SYMBOL_UP,    KEY_UPARROW,    lv_color_hex(0x555555));
+        create_virtual_btn(scr, cx - 35,  dpad_y + 5,  70, 70, LV_SYMBOL_DOWN,  KEY_DOWNARROW,  lv_color_hex(0x555555));
         
-        // Botões extras para trocar arma (virar a esquerda/direita) nos cantos inferiores
-        create_virtual_btn(scr, 10,  dpad_y + 40, 45, 45, "<", ',', lv_color_hex(0x888888));
-        create_virtual_btn(scr, 310, dpad_y + 40, 45, 45, ">", '.', lv_color_hex(0x888888));
+        // Botões de trocar arma/esquivar nos cantos da cruz
+        create_virtual_btn(scr, 10,  420, 60, 60, "<", ',', lv_color_hex(0x888888));
+        create_virtual_btn(scr, 340, 420, 60, 60, ">", '.', lv_color_hex(0x888888));
 
         bsp_display_unlock();
     }
@@ -224,7 +218,7 @@ extern "C" void app_main(void) {
 
     FILE* f = fopen("/sdcard/DOOM/DOOM1.WAD", "r");
     if (!f) {
-        ESP_LOGE(TAG, "ERRO CRITICO: Arquivo /sdcard/DOOM/DOOM1.WAD não encontrado!");
+        ESP_LOGE(TAG, "ERRO CRITICO: /sdcard/DOOM/DOOM1.WAD não encontrado!");
         vTaskDelay(pdMS_TO_TICKS(3000)); 
         const esp_partition_t *factory_part = esp_partition_find_first(ESP_PARTITION_TYPE_APP, ESP_PARTITION_SUBTYPE_APP_FACTORY, NULL);
         if (factory_part) {
