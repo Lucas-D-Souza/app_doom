@@ -224,7 +224,45 @@ extern "C" void app_main(void) {
         create_virtual_btn(scr, 294, 290, 60, 60, "USE",   ' ',       lv_color_hex(0x33FF33)); 
         create_virtual_btn(scr, 294, 430, 60, 60, "FIRE",  KEY_RCTRL, lv_color_hex(0xFF3333)); 
         create_virtual_btn(scr, 234, 360, 60, 60, "ENT",   13,        lv_color_hex(0x3333FF)); 
-        create_virtual_btn(scr, 334, 360, 60, 60, "ESC",   27,        lv_color_hex(0xAAAAAA)); 
+        create_virtual_btn(scr, 334, 360, 60, 60, "ESC",   27,        lv_color_hex(0xAAAAAA));
+
+        // ==========================================
+        // CONTROLE DE VOLUME (Canto Superior Direito)
+        // ==========================================
+        
+        // Botão de Aumentar Volume (+)
+        lv_obj_t * btn_vol_up = lv_btn_create(scr);
+        lv_obj_set_size(btn_vol_up, 40, 40);
+        lv_obj_align(btn_vol_up, LV_ALIGN_TOP_RIGHT, -10, 50); // Fica na margem preta superior
+        lv_obj_set_style_bg_color(btn_vol_up, lv_color_hex(0x444444), 0);
+        lv_obj_set_style_radius(btn_vol_up, 10, 0);
+        
+        lv_obj_t * lbl_vup = lv_label_create(btn_vol_up);
+        lv_label_set_text(lbl_vup, LV_SYMBOL_VOLUME_MAX);
+        lv_obj_center(lbl_vup);
+        
+        lv_obj_add_event_cb(btn_vol_up, [](lv_event_t * e) {
+            int vol = bsp_extra_codec_volume_get();
+            if (vol < 100) vol += 10;
+            bsp_extra_codec_volume_set(vol, NULL);
+        }, LV_EVENT_CLICKED, NULL);
+
+        // Botão de Diminuir Volume (-)
+        lv_obj_t * btn_vol_down = lv_btn_create(scr);
+        lv_obj_set_size(btn_vol_down, 40, 40);
+        lv_obj_align(btn_vol_down, LV_ALIGN_TOP_RIGHT, -10, 110); // Fica logo abaixo do botão de aumentar
+        lv_obj_set_style_bg_color(btn_vol_down, lv_color_hex(0x444444), 0);
+        lv_obj_set_style_radius(btn_vol_down, 10, 0);
+        
+        lv_obj_t * lbl_vdn = lv_label_create(btn_vol_down);
+        lv_label_set_text(lbl_vdn, LV_SYMBOL_VOLUME_MID);
+        lv_obj_center(lbl_vdn);
+        
+        lv_obj_add_event_cb(btn_vol_down, [](lv_event_t * e) {
+            int vol = bsp_extra_codec_volume_get();
+            if (vol > 0) vol -= 10;
+            bsp_extra_codec_volume_set(vol, NULL);
+        }, LV_EVENT_CLICKED, NULL);
 
         bsp_display_unlock();
     }
