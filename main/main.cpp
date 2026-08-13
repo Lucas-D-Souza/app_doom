@@ -2,7 +2,6 @@
 #include "bsp/esp-bsp.h"
 #include "lvgl.h"
 #include "driver/gpio.h"
-#include "driver/i2c_master.h"
 #include "SdUsbManager.hpp"
 #include "esp_ota_ops.h"
 #include "esp_partition.h"
@@ -14,6 +13,8 @@
 #include "display/lv_display_private.h"
 #include "esp_rom_sys.h"
 #include <unistd.h>
+#include "freertos/ringbuf.h"
+#include "bsp_board_extra.h" 
 
 static const char *TAG = "DoomFW";
 #define BOOT_BTN_PIN GPIO_NUM_0
@@ -27,11 +28,31 @@ extern "C" {
 #define CHUNK_LINES 20
 static uint16_t* dma_buffer[2] = {nullptr, nullptr};
 static uint8_t current_buf = 0;
-static volatile bool emu_stop_requested = false;
 
-// =======================================================
-// FILA DE EVENTOS DO TECLADO VIRTUAL
-// =======================================================
+static volatile bool emu_stop_requested = false;
+static RingbufHandle_t audio_ringbuf = NULL;
+
+static void audio_drain_task(void *arg) {
+    size_t bytes_written;
+    while (!emu_stop_requested) {
+        size_t item_size;
+        uint8_t *data = (uint8_t *)xRingbufferReceive(audio_ringbuf, &item_size, pdMS_TO_TICKS(100));
+        if (data) {
+            bsp_extra_i2s_write(data, item_size, &bytes_written, portMAX_DELAY);
+            vRingbufferReturnItem(audio_ringbuf, (void *)data);
+        }
+    }
+    vTaskDelete(NULL);
+}
+
+extern "C" void doom_push_audio_samples(int16_t *samples, size_t num_samples) {
+    if (audio_ringbuf) {
+        if (xRingbufferSend(audio_ringbuf, samples, num_samples * sizeof(int16_t), pdMS_TO_TICKS(10)) != pdTRUE) {
+            vTaskDelay(pdMS_TO_TICKS(1)); 
+        }
+    }
+}
+
 #define KEY_QUEUE_SIZE 32
 struct KeyEvent { int pressed; unsigned char key; };
 static KeyEvent key_queue[KEY_QUEUE_SIZE];
@@ -47,9 +68,6 @@ static void push_key(int pressed, unsigned char key) {
     }
 }
 
-// =======================================================
-// OBRIGAÇÕES DO MOTOR DOOMGENERIC
-// =======================================================
 extern "C" {
     #include "doomgeneric.h"
     void DG_Init() {}
@@ -82,8 +100,7 @@ extern "C" {
                 }
             }
             lv_area_t area;
-            // Centralização Exata para Tela 410x502 (X=45, Y=151)
-            area.x1 = 45; area.y1 = 20 + (chunk * CHUNK_LINES);
+            area.x1 = 44; area.y1 = 20 + (chunk * CHUNK_LINES);
             area.x2 = area.x1 + DOOM_WIDTH - 1; area.y2 = area.y1 + CHUNK_LINES - 1;
             
             if (lvgl_port_lock(pdMS_TO_TICKS(10))) {
@@ -163,55 +180,63 @@ extern "C" void app_main(void) {
     gpio_config(&io_conf);
 
     bsp_display_start();
-    
-    // [NOVO] Atraso vital para impedir a "Corrida" contra a placa de vídeo
-    vTaskDelay(pdMS_TO_TICKS(500)); 
-
-    i2c_master_bus_handle_t i2c_bus = bsp_i2c_get_handle();
-    if (i2c_bus == NULL) {
-        i2c_master_bus_config_t i2c_mst_config = {};
-        i2c_mst_config.clk_source = I2C_CLK_SRC_DEFAULT;
-        i2c_mst_config.i2c_port = -1;
-        i2c_mst_config.scl_io_num = GPIO_NUM_14;
-        i2c_mst_config.sda_io_num = GPIO_NUM_15;
-        i2c_mst_config.glitch_ignore_cnt = 7;
-        i2c_mst_config.flags.enable_internal_pullup = true;
-        i2c_new_master_bus(&i2c_mst_config, &i2c_bus);
-    }
+    vTaskDelay(pdMS_TO_TICKS(100)); 
 
     if (bsp_display_lock(pdMS_TO_TICKS(100))) {
-        lv_obj_t * scr = lv_scr_act(); // [CORRIGIDO] Chamada mais segura do LVGL
-        // lv_obj_remove_flag(scr, LV_OBJ_FLAG_SCROLLABLE);
+        lv_obj_t * scr = lv_scr_act(); 
         lv_obj_set_style_bg_color(scr, lv_color_black(), 0);
         
-        // ==========================================
-        // GAMEPAD VIRTUAL ERGONÔMICO E TRAVADO
-        // ==========================================
         #define KEY_RIGHTARROW 0xae
         #define KEY_LEFTARROW  0xac
         #define KEY_UPARROW    0xad
         #define KEY_DOWNARROW  0xaf
         #define KEY_RCTRL      (0x80+0x1d) 
         
-        // --- TROCA DE ARMAS / STRAFE (Abaixo da tela do jogo) ---
-        create_virtual_btn(scr, 120, 235, 50, 50, "<", ',', lv_color_hex(0x888888));
-        create_virtual_btn(scr, 240, 235, 50, 50, ">", '.', lv_color_hex(0x888888));
+        static int current_weapon = 2;
 
-        // --- D-PAD (Lado Esquerdo Inferior) ---
-        create_virtual_btn(scr, 70, 300, 60, 60, LV_SYMBOL_UP,    KEY_UPARROW,    lv_color_hex(0x555555));
-        create_virtual_btn(scr, 70, 440, 60, 60, LV_SYMBOL_DOWN,  KEY_DOWNARROW,  lv_color_hex(0x555555));
-        create_virtual_btn(scr, 10, 370, 60, 60, LV_SYMBOL_LEFT,  KEY_LEFTARROW,  lv_color_hex(0x555555));
-        create_virtual_btn(scr, 130, 370, 60, 60, LV_SYMBOL_RIGHT, KEY_RIGHTARROW, lv_color_hex(0x555555));
+        create_virtual_btn(scr, 150, 300, 50, 50, "<", 0, lv_color_hex(0x888888));
+        lv_obj_t * btn_prev = lv_obj_get_child(scr, -1);
+        lv_obj_add_event_cb(btn_prev, [](lv_event_t * e) {
+            push_key(1, '0' + current_weapon);
+            current_weapon = (current_weapon <= 1) ? 7 : current_weapon - 1;
+            push_key(1, '0' + current_weapon);
+        }, LV_EVENT_PRESSED, NULL);
+        lv_obj_add_event_cb(btn_prev, [](lv_event_t * e) {
+            push_key(0, '0' + current_weapon);
+        }, LV_EVENT_RELEASED, NULL);
 
-        // --- BOTÕES DE AÇÃO (Lado Direito Inferior) ---
-        create_virtual_btn(scr, 280, 300, 60, 60, "USE",   ' ',       lv_color_hex(0x33FF33)); 
-        create_virtual_btn(scr, 280, 440, 60, 60, "FIRE",  KEY_RCTRL, lv_color_hex(0xFF3333)); 
-        create_virtual_btn(scr, 220, 370, 60, 60, "ENT",   13,        lv_color_hex(0x3333FF)); 
-        create_virtual_btn(scr, 340, 370, 60, 60, "ESC",   27,        lv_color_hex(0xAAAAAA));
+        create_virtual_btn(scr, 210, 300, 50, 50, ">", 0, lv_color_hex(0x888888));
+        lv_obj_t * btn_next = lv_obj_get_child(scr, -1);
+        lv_obj_add_event_cb(btn_next, [](lv_event_t * e) {
+            push_key(1, '0' + current_weapon);
+            current_weapon = (current_weapon >= 7) ? 1 : current_weapon + 1;
+            push_key(1, '0' + current_weapon); 
+        }, LV_EVENT_PRESSED, NULL);
+        lv_obj_add_event_cb(btn_next, [](lv_event_t * e) {
+            push_key(0, '0' + current_weapon);
+        }, LV_EVENT_RELEASED, NULL);
+
+        create_virtual_btn(scr, 54, 290, 60, 60, LV_SYMBOL_UP,    KEY_UPARROW,    lv_color_hex(0x555555));
+        create_virtual_btn(scr, 54, 430, 60, 60, LV_SYMBOL_DOWN,  KEY_DOWNARROW,  lv_color_hex(0x555555));
+        create_virtual_btn(scr, 14, 360, 60, 60, LV_SYMBOL_LEFT,  KEY_LEFTARROW,  lv_color_hex(0x555555));
+        create_virtual_btn(scr, 94, 360, 60, 60, LV_SYMBOL_RIGHT, KEY_RIGHTARROW, lv_color_hex(0x555555));
+
+        create_virtual_btn(scr, 294, 290, 60, 60, "USE",   ' ',       lv_color_hex(0x33FF33)); 
+        create_virtual_btn(scr, 294, 430, 60, 60, "FIRE",  KEY_RCTRL, lv_color_hex(0xFF3333)); 
+        create_virtual_btn(scr, 234, 360, 60, 60, "ENT",   13,        lv_color_hex(0x3333FF)); 
+        create_virtual_btn(scr, 334, 360, 60, 60, "ESC",   27,        lv_color_hex(0xAAAAAA)); 
 
         bsp_display_unlock();
     }
     bsp_display_brightness_set(80);
+
+    bsp_extra_codec_init();
+    bsp_extra_codec_set_fs(44100, 16, I2S_SLOT_MODE_STEREO);
+    bsp_extra_codec_mute_set(false);
+    bsp_extra_codec_volume_set(80, NULL);
+    
+    audio_ringbuf = xRingbufferCreate(16384, RINGBUF_TYPE_BYTEBUF);
+    xTaskCreatePinnedToCore(audio_drain_task, "audio_drain", 4096, NULL, 5, NULL, 0);
 
     SdUsbManager::get_instance().init_local_storage();
 
@@ -260,7 +285,6 @@ extern "C" void app_main(void) {
         }
     }
 
-    ESP_LOGW(TAG, "Jogo Encerrado! Devolvendo o controle ao Relogio...");
     bsp_display_brightness_set(0); 
     const esp_partition_t *factory_part = esp_partition_find_first(ESP_PARTITION_TYPE_APP, ESP_PARTITION_SUBTYPE_APP_FACTORY, NULL);
     if (factory_part) {
