@@ -83,7 +83,7 @@ extern "C" {
             }
             lv_area_t area;
             // Centralização Exata para Tela 410x502 (X=45, Y=151)
-            area.x1 = 45; area.y1 = 151 + (chunk * CHUNK_LINES);
+            area.x1 = 45; area.y1 = 20 + (chunk * CHUNK_LINES);
             area.x2 = area.x1 + DOOM_WIDTH - 1; area.y2 = area.y1 + CHUNK_LINES - 1;
             
             if (lvgl_port_lock(pdMS_TO_TICKS(10))) {
@@ -181,10 +181,11 @@ extern "C" void app_main(void) {
 
     if (bsp_display_lock(pdMS_TO_TICKS(100))) {
         lv_obj_t * scr = lv_scr_act(); // [CORRIGIDO] Chamada mais segura do LVGL
+        // lv_obj_remove_flag(scr, LV_OBJ_FLAG_SCROLLABLE);
         lv_obj_set_style_bg_color(scr, lv_color_black(), 0);
         
         // ==========================================
-        // GAMEPAD VIRTUAL PARA TELA 410x502
+        // GAMEPAD VIRTUAL ERGONÔMICO E TRAVADO
         // ==========================================
         #define KEY_RIGHTARROW 0xae
         #define KEY_LEFTARROW  0xac
@@ -192,23 +193,21 @@ extern "C" void app_main(void) {
         #define KEY_DOWNARROW  0xaf
         #define KEY_RCTRL      (0x80+0x1d) 
         
-        // BOTÕES DE AÇÃO SUPERIORES (Y = 40, mais espaço para os dedos)
-        create_virtual_btn(scr, 20,  40, 80, 70, "FIRE",  KEY_RCTRL, lv_color_hex(0xFF3333));
-        create_virtual_btn(scr, 115, 40, 80, 70, "USE",   ' ',       lv_color_hex(0x33FF33)); 
-        create_virtual_btn(scr, 210, 40, 80, 70, "ENTER", 13,        lv_color_hex(0x3333FF)); 
-        create_virtual_btn(scr, 305, 40, 85, 70, "ESC",   27,        lv_color_hex(0xAAAAAA)); 
-        
-        // D-PAD INFERIOR (Formato de Cruz espaçosa para não errar o toque)
-        int cx = 205; // Metade da tela de 410
-        int dpad_y = 430; // Y Base
-        create_virtual_btn(scr, cx - 110, dpad_y - 30, 70, 70, LV_SYMBOL_LEFT,  KEY_LEFTARROW,  lv_color_hex(0x555555));
-        create_virtual_btn(scr, cx + 40,  dpad_y - 30, 70, 70, LV_SYMBOL_RIGHT, KEY_RIGHTARROW, lv_color_hex(0x555555));
-        create_virtual_btn(scr, cx - 35,  dpad_y - 75, 70, 70, LV_SYMBOL_UP,    KEY_UPARROW,    lv_color_hex(0x555555));
-        create_virtual_btn(scr, cx - 35,  dpad_y + 5,  70, 70, LV_SYMBOL_DOWN,  KEY_DOWNARROW,  lv_color_hex(0x555555));
-        
-        // Botões de trocar arma/esquivar nos cantos da cruz
-        create_virtual_btn(scr, 10,  420, 60, 60, "<", ',', lv_color_hex(0x888888));
-        create_virtual_btn(scr, 340, 420, 60, 60, ">", '.', lv_color_hex(0x888888));
+        // --- TROCA DE ARMAS / STRAFE (Abaixo da tela do jogo) ---
+        create_virtual_btn(scr, 120, 235, 50, 50, "<", ',', lv_color_hex(0x888888));
+        create_virtual_btn(scr, 240, 235, 50, 50, ">", '.', lv_color_hex(0x888888));
+
+        // --- D-PAD (Lado Esquerdo Inferior) ---
+        create_virtual_btn(scr, 70, 300, 60, 60, LV_SYMBOL_UP,    KEY_UPARROW,    lv_color_hex(0x555555));
+        create_virtual_btn(scr, 70, 440, 60, 60, LV_SYMBOL_DOWN,  KEY_DOWNARROW,  lv_color_hex(0x555555));
+        create_virtual_btn(scr, 10, 370, 60, 60, LV_SYMBOL_LEFT,  KEY_LEFTARROW,  lv_color_hex(0x555555));
+        create_virtual_btn(scr, 130, 370, 60, 60, LV_SYMBOL_RIGHT, KEY_RIGHTARROW, lv_color_hex(0x555555));
+
+        // --- BOTÕES DE AÇÃO (Lado Direito Inferior) ---
+        create_virtual_btn(scr, 280, 300, 60, 60, "USE",   ' ',       lv_color_hex(0x33FF33)); 
+        create_virtual_btn(scr, 280, 440, 60, 60, "FIRE",  KEY_RCTRL, lv_color_hex(0xFF3333)); 
+        create_virtual_btn(scr, 220, 370, 60, 60, "ENT",   13,        lv_color_hex(0x3333FF)); 
+        create_virtual_btn(scr, 340, 370, 60, 60, "ESC",   27,        lv_color_hex(0xAAAAAA));
 
         bsp_display_unlock();
     }
@@ -250,7 +249,12 @@ extern "C" void app_main(void) {
         if (current_time_us > next_frame_target_us + 57142) next_frame_target_us = current_time_us;
         
         if (current_time_us < next_frame_target_us) {
-            while (esp_timer_get_time() < next_frame_target_us) { taskYIELD(); }
+            uint32_t delay_ms = (next_frame_target_us - current_time_us) / 1000;
+            if (delay_ms > 0) {
+                vTaskDelay(pdMS_TO_TICKS(delay_ms));
+            } else {
+                vTaskDelay(pdMS_TO_TICKS(1));
+            }
         } else {
             vTaskDelay(pdMS_TO_TICKS(1));
         }
