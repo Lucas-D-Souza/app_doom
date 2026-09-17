@@ -166,6 +166,8 @@ static void create_virtual_btn(lv_obj_t* parent, int x, int y, int w, int h, con
 extern "C" void app_main(void) {
     clear_i2c_bus();
 
+    esp_ota_mark_app_valid_cancel_rollback();
+
     esp_err_t ret = nvs_flash_init();
     if (ret == ESP_ERR_NVS_NO_FREE_PAGES || ret == ESP_ERR_NVS_NEW_VERSION_FOUND) {
         nvs_flash_erase();
