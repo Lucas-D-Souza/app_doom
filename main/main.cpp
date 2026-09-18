@@ -122,14 +122,14 @@ static void clear_i2c_bus(void) {
     io_conf.pull_up_en = GPIO_PULLUP_ENABLE;
     gpio_config(&io_conf);
 
-    gpio_set_level(GPIO_NUM_15, 1); esp_rom_delay_us(10);
+    gpio_set_level(GPIO_NUM_15, 1); esp_rom_delay_us(100);
     for (int i = 0; i < 9; i++) {
-        gpio_set_level(GPIO_NUM_14, 0); esp_rom_delay_us(10);
-        gpio_set_level(GPIO_NUM_14, 1); esp_rom_delay_us(10);
+        gpio_set_level(GPIO_NUM_14, 0); esp_rom_delay_us(100);
+        gpio_set_level(GPIO_NUM_14, 1); esp_rom_delay_us(100);
     }
-    gpio_set_level(GPIO_NUM_15, 0); esp_rom_delay_us(10);
-    gpio_set_level(GPIO_NUM_14, 1); esp_rom_delay_us(10);
-    gpio_set_level(GPIO_NUM_15, 1); esp_rom_delay_us(10);
+    gpio_set_level(GPIO_NUM_15, 0); esp_rom_delay_us(100);
+    gpio_set_level(GPIO_NUM_14, 1); esp_rom_delay_us(100);
+    gpio_set_level(GPIO_NUM_15, 1); esp_rom_delay_us(100);
 
     gpio_reset_pin(GPIO_NUM_14);
     gpio_reset_pin(GPIO_NUM_15);
@@ -182,8 +182,17 @@ extern "C" void app_main(void) {
     gpio_config(&io_conf);
 
     bsp_display_start();
-    vTaskDelay(pdMS_TO_TICKS(100)); 
+    
+    // 1. INICIALIZA O ÁUDIO ANTES DE ACENDER A TELA
+    bsp_extra_codec_init();
+    bsp_extra_codec_set_fs(44100, 16, I2S_SLOT_MODE_STEREO);
+    bsp_extra_codec_mute_set(false);
+    bsp_extra_codec_volume_set(80, NULL);
+    
+    audio_ringbuf = xRingbufferCreate(16384, RINGBUF_TYPE_BYTEBUF);
+    xTaskCreatePinnedToCore(audio_drain_task, "audio_drain", 4096, NULL, 5, NULL, 0);
 
+    // 2. AGORA DESENHA A TELA
     if (bsp_display_lock(pdMS_TO_TICKS(100))) {
         lv_obj_t * scr = lv_scr_act(); 
         lv_obj_set_style_bg_color(scr, lv_color_black(), 0);
@@ -228,14 +237,10 @@ extern "C" void app_main(void) {
         create_virtual_btn(scr, 234, 360, 60, 60, "ENT",   13,        lv_color_hex(0x3333FF)); 
         create_virtual_btn(scr, 334, 360, 60, 60, "ESC",   27,        lv_color_hex(0xAAAAAA));
 
-        // ==========================================
-        // CONTROLE DE VOLUME (Canto Superior Direito)
-        // ==========================================
-        
-        // Botão de Aumentar Volume (+)
+        // CONTROLE DE VOLUME
         lv_obj_t * btn_vol_up = lv_btn_create(scr);
         lv_obj_set_size(btn_vol_up, 40, 40);
-        lv_obj_align(btn_vol_up, LV_ALIGN_TOP_RIGHT, -10, 50); // Fica na margem preta superior
+        lv_obj_align(btn_vol_up, LV_ALIGN_TOP_RIGHT, -10, 50);
         lv_obj_set_style_bg_color(btn_vol_up, lv_color_hex(0x444444), 0);
         lv_obj_set_style_radius(btn_vol_up, 10, 0);
         
@@ -249,10 +254,9 @@ extern "C" void app_main(void) {
             bsp_extra_codec_volume_set(vol, NULL);
         }, LV_EVENT_CLICKED, NULL);
 
-        // Botão de Diminuir Volume (-)
         lv_obj_t * btn_vol_down = lv_btn_create(scr);
         lv_obj_set_size(btn_vol_down, 40, 40);
-        lv_obj_align(btn_vol_down, LV_ALIGN_TOP_RIGHT, -10, 110); // Fica logo abaixo do botão de aumentar
+        lv_obj_align(btn_vol_down, LV_ALIGN_TOP_RIGHT, -10, 110);
         lv_obj_set_style_bg_color(btn_vol_down, lv_color_hex(0x444444), 0);
         lv_obj_set_style_radius(btn_vol_down, 10, 0);
         
@@ -268,16 +272,12 @@ extern "C" void app_main(void) {
 
         bsp_display_unlock();
     }
+    
+    // 3. ACENDE A LUZ SOMENTE DEPOIS DE TUDO ESTAR INICIALIZADO E SEPARADO
+    vTaskDelay(pdMS_TO_TICKS(50));
     bsp_display_brightness_set(80);
 
-    bsp_extra_codec_init();
-    bsp_extra_codec_set_fs(44100, 16, I2S_SLOT_MODE_STEREO);
-    bsp_extra_codec_mute_set(false);
-    bsp_extra_codec_volume_set(80, NULL);
-    
-    audio_ringbuf = xRingbufferCreate(16384, RINGBUF_TYPE_BYTEBUF);
-    xTaskCreatePinnedToCore(audio_drain_task, "audio_drain", 4096, NULL, 5, NULL, 0);
-
+    // 4. INICIA O SD CARD
     SdUsbManager::get_instance().init_local_storage();
 
     FILE* f = fopen("/sdcard/DOOM/DOOM1.WAD", "r");
