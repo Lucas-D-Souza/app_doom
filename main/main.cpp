@@ -14,7 +14,38 @@
 #include "esp_rom_sys.h"
 #include <unistd.h>
 #include "freertos/ringbuf.h"
-#include "bsp_board_extra.h" 
+#include "bsp_board_extra.h"
+
+LV_IMAGE_DECLARE(icon_doom); 
+static lv_obj_t * scr_splash = NULL;
+
+static void show_splash_screen(const char* version) {
+    // 1. Cria a tela de Splash
+    scr_splash = lv_obj_create(NULL);
+    lv_obj_set_style_bg_color(scr_splash, lv_color_black(), 0);
+    lv_obj_remove_flag(scr_splash, LV_OBJ_FLAG_SCROLLABLE);
+
+    // 2. Ícone do DOOM centralizado diretamente na tela
+    lv_obj_t * logo = lv_image_create(scr_splash);
+    lv_image_set_src(logo, &icon_doom);
+    
+    // Escala 512 (200%) e tamanho 200x200
+    lv_image_set_scale(logo, 512);
+    lv_obj_set_size(logo, 200, 200);
+    
+    // Como tiramos o texto, centralizamos o logo perfeitamente no meio da tela (levemente pra cima)
+    lv_obj_align(logo, LV_ALIGN_CENTER, 0, -20); 
+
+    // 3. Versão no rodapé
+    lv_obj_t * lbl_version = lv_label_create(scr_splash);
+    lv_label_set_text_fmt(lbl_version, "v%s", version);
+    lv_obj_set_style_text_font(lbl_version, &lv_font_montserrat_16, 0);
+    lv_obj_set_style_text_color(lbl_version, lv_color_hex(0x555555), 0); // Cinza discreto
+    lv_obj_align(lbl_version, LV_ALIGN_BOTTOM_MID, 0, -25);
+
+    // 4. Joga imediatamente na tela sem animação
+    lv_screen_load(scr_splash);
+}
 
 static const char *TAG = "DoomFW";
 #define BOOT_BTN_PIN GPIO_NUM_0
@@ -165,7 +196,6 @@ static void create_virtual_btn(lv_obj_t* parent, int x, int y, int w, int h, con
 
 extern "C" void app_main(void) {
     clear_i2c_bus();
-
     esp_ota_mark_app_valid_cancel_rollback();
 
     esp_err_t ret = nvs_flash_init();
@@ -181,9 +211,27 @@ extern "C" void app_main(void) {
     io_conf.pull_up_en = GPIO_PULLUP_ENABLE;
     gpio_config(&io_conf);
 
+    // ==========================================
+    // 1. O DISPLAY DEVE INICIAR PRIMEIRO (Para ser dono do Barramento I2C)
+    // ==========================================
     bsp_display_start();
     
-    // 1. INICIALIZA O ÁUDIO ANTES DE ACENDER A TELA
+    // Mostra a Splash imediatamente
+    if (bsp_display_lock(pdMS_TO_TICKS(100))) {
+        show_splash_screen("1.0.0");
+        bsp_display_unlock();
+    }
+    
+    // Dá 100ms para a placa de vídeo renderizar o frame
+    vTaskDelay(pdMS_TO_TICKS(100));
+    bsp_display_brightness_set(80);
+    
+    // DELAY CRUCIAL: Dá 100ms para o PWM do brilho assentar antes de ligar o Áudio
+    vTaskDelay(pdMS_TO_TICKS(100));
+
+    // ==========================================
+    // 2. AGORA É SEGURO INICIAR O ÁUDIO E O SD
+    // ==========================================
     bsp_extra_codec_init();
     bsp_extra_codec_set_fs(44100, 16, I2S_SLOT_MODE_STEREO);
     bsp_extra_codec_mute_set(false);
@@ -192,10 +240,17 @@ extern "C" void app_main(void) {
     audio_ringbuf = xRingbufferCreate(16384, RINGBUF_TYPE_BYTEBUF);
     xTaskCreatePinnedToCore(audio_drain_task, "audio_drain", 4096, NULL, 5, NULL, 0);
 
-    // 2. AGORA DESENHA A TELA
+    SdUsbManager::get_instance().init_local_storage();
+
+    // ==========================================
+    // 3. PREPARA A TELA DO JOGO INVISÍVEL
+    // ==========================================
+    lv_obj_t * scr_game = NULL; 
+
     if (bsp_display_lock(pdMS_TO_TICKS(100))) {
-        lv_obj_t * scr = lv_scr_act(); 
-        lv_obj_set_style_bg_color(scr, lv_color_black(), 0);
+        scr_game = lv_obj_create(NULL); 
+        lv_obj_set_style_bg_color(scr_game, lv_color_black(), 0);
+        lv_obj_remove_flag(scr_game, LV_OBJ_FLAG_SCROLLABLE);
         
         #define KEY_RIGHTARROW 0xae
         #define KEY_LEFTARROW  0xac
@@ -205,65 +260,56 @@ extern "C" void app_main(void) {
         
         static int current_weapon = 2;
 
-        create_virtual_btn(scr, 150, 300, 50, 50, "<", 0, lv_color_hex(0x888888));
-        lv_obj_t * btn_prev = lv_obj_get_child(scr, -1);
+        create_virtual_btn(scr_game, 150, 300, 50, 50, "<", 0, lv_color_hex(0x888888));
+        lv_obj_t * btn_prev = lv_obj_get_child(scr_game, -1);
         lv_obj_add_event_cb(btn_prev, [](lv_event_t * e) {
             push_key(1, '0' + current_weapon);
             current_weapon = (current_weapon <= 1) ? 7 : current_weapon - 1;
             push_key(1, '0' + current_weapon);
         }, LV_EVENT_PRESSED, NULL);
-        lv_obj_add_event_cb(btn_prev, [](lv_event_t * e) {
-            push_key(0, '0' + current_weapon);
-        }, LV_EVENT_RELEASED, NULL);
+        lv_obj_add_event_cb(btn_prev, [](lv_event_t * e) { push_key(0, '0' + current_weapon); }, LV_EVENT_RELEASED, NULL);
 
-        create_virtual_btn(scr, 210, 300, 50, 50, ">", 0, lv_color_hex(0x888888));
-        lv_obj_t * btn_next = lv_obj_get_child(scr, -1);
+        create_virtual_btn(scr_game, 210, 300, 50, 50, ">", 0, lv_color_hex(0x888888));
+        lv_obj_t * btn_next = lv_obj_get_child(scr_game, -1);
         lv_obj_add_event_cb(btn_next, [](lv_event_t * e) {
             push_key(1, '0' + current_weapon);
             current_weapon = (current_weapon >= 7) ? 1 : current_weapon + 1;
             push_key(1, '0' + current_weapon); 
         }, LV_EVENT_PRESSED, NULL);
-        lv_obj_add_event_cb(btn_next, [](lv_event_t * e) {
-            push_key(0, '0' + current_weapon);
-        }, LV_EVENT_RELEASED, NULL);
+        lv_obj_add_event_cb(btn_next, [](lv_event_t * e) { push_key(0, '0' + current_weapon); }, LV_EVENT_RELEASED, NULL);
 
-        create_virtual_btn(scr, 54, 290, 60, 60, LV_SYMBOL_UP,    KEY_UPARROW,    lv_color_hex(0x555555));
-        create_virtual_btn(scr, 54, 430, 60, 60, LV_SYMBOL_DOWN,  KEY_DOWNARROW,  lv_color_hex(0x555555));
-        create_virtual_btn(scr, 14, 360, 60, 60, LV_SYMBOL_LEFT,  KEY_LEFTARROW,  lv_color_hex(0x555555));
-        create_virtual_btn(scr, 94, 360, 60, 60, LV_SYMBOL_RIGHT, KEY_RIGHTARROW, lv_color_hex(0x555555));
+        create_virtual_btn(scr_game, 54, 290, 60, 60, LV_SYMBOL_UP,    KEY_UPARROW,    lv_color_hex(0x555555));
+        create_virtual_btn(scr_game, 54, 430, 60, 60, LV_SYMBOL_DOWN,  KEY_DOWNARROW,  lv_color_hex(0x555555));
+        create_virtual_btn(scr_game, 14, 360, 60, 60, LV_SYMBOL_LEFT,  KEY_LEFTARROW,  lv_color_hex(0x555555));
+        create_virtual_btn(scr_game, 94, 360, 60, 60, LV_SYMBOL_RIGHT, KEY_RIGHTARROW, lv_color_hex(0x555555));
 
-        create_virtual_btn(scr, 294, 290, 60, 60, "USE",   ' ',       lv_color_hex(0x33FF33)); 
-        create_virtual_btn(scr, 294, 430, 60, 60, "FIRE",  KEY_RCTRL, lv_color_hex(0xFF3333)); 
-        create_virtual_btn(scr, 234, 360, 60, 60, "ENT",   13,        lv_color_hex(0x3333FF)); 
-        create_virtual_btn(scr, 334, 360, 60, 60, "ESC",   27,        lv_color_hex(0xAAAAAA));
+        create_virtual_btn(scr_game, 294, 290, 60, 60, "USE",   ' ',       lv_color_hex(0x33FF33)); 
+        create_virtual_btn(scr_game, 294, 430, 60, 60, "FIRE",  KEY_RCTRL, lv_color_hex(0xFF3333)); 
+        create_virtual_btn(scr_game, 234, 360, 60, 60, "ENT",   13,        lv_color_hex(0x3333FF)); 
+        create_virtual_btn(scr_game, 334, 360, 60, 60, "ESC",   27,        lv_color_hex(0xAAAAAA));
 
-        // CONTROLE DE VOLUME
-        lv_obj_t * btn_vol_up = lv_btn_create(scr);
+        lv_obj_t * btn_vol_up = lv_btn_create(scr_game);
         lv_obj_set_size(btn_vol_up, 40, 40);
         lv_obj_align(btn_vol_up, LV_ALIGN_TOP_RIGHT, -10, 50);
         lv_obj_set_style_bg_color(btn_vol_up, lv_color_hex(0x444444), 0);
         lv_obj_set_style_radius(btn_vol_up, 10, 0);
-        
         lv_obj_t * lbl_vup = lv_label_create(btn_vol_up);
         lv_label_set_text(lbl_vup, LV_SYMBOL_VOLUME_MAX);
         lv_obj_center(lbl_vup);
-        
         lv_obj_add_event_cb(btn_vol_up, [](lv_event_t * e) {
             int vol = bsp_extra_codec_volume_get();
             if (vol < 100) vol += 10;
             bsp_extra_codec_volume_set(vol, NULL);
         }, LV_EVENT_CLICKED, NULL);
 
-        lv_obj_t * btn_vol_down = lv_btn_create(scr);
+        lv_obj_t * btn_vol_down = lv_btn_create(scr_game);
         lv_obj_set_size(btn_vol_down, 40, 40);
         lv_obj_align(btn_vol_down, LV_ALIGN_TOP_RIGHT, -10, 110);
         lv_obj_set_style_bg_color(btn_vol_down, lv_color_hex(0x444444), 0);
         lv_obj_set_style_radius(btn_vol_down, 10, 0);
-        
         lv_obj_t * lbl_vdn = lv_label_create(btn_vol_down);
         lv_label_set_text(lbl_vdn, LV_SYMBOL_VOLUME_MID);
         lv_obj_center(lbl_vdn);
-        
         lv_obj_add_event_cb(btn_vol_down, [](lv_event_t * e) {
             int vol = bsp_extra_codec_volume_get();
             if (vol > 0) vol -= 10;
@@ -272,17 +318,13 @@ extern "C" void app_main(void) {
 
         bsp_display_unlock();
     }
-    
-    // 3. ACENDE A LUZ SOMENTE DEPOIS DE TUDO ESTAR INICIALIZADO E SEPARADO
-    vTaskDelay(pdMS_TO_TICKS(50));
-    bsp_display_brightness_set(80);
 
-    // 4. INICIA O SD CARD
-    SdUsbManager::get_instance().init_local_storage();
-
+    // ==========================================
+    // 4. CARREGA O MOTOR DO DOOM
+    // ==========================================
     FILE* f = fopen("/sdcard/DOOM/DOOM1.WAD", "r");
     if (!f) {
-        ESP_LOGE(TAG, "ERRO CRITICO: /sdcard/DOOM/DOOM1.WAD não encontrado!");
+        ESP_LOGE(TAG, "ERRO CRITICO: /sdcard/DOOM/DOOM1.WAD nao encontrado!");
         vTaskDelay(pdMS_TO_TICKS(3000)); 
         const esp_partition_t *factory_part = esp_partition_find_first(ESP_PARTITION_TYPE_APP, ESP_PARTITION_SUBTYPE_APP_FACTORY, NULL);
         if (factory_part) {
@@ -297,8 +339,24 @@ extern "C" void app_main(void) {
 
     chdir("/sdcard/DOOM");
     char* doom_argv[] = {(char*)"doom", (char*)"-iwad", (char*)"/sdcard/DOOM/DOOM1.WAD"};
+    
+    // A CPU vai ficar presa aqui processando os gráficos do Doom
     doomgeneric_Create(3, doom_argv);
 
+    // ==========================================
+    // 5. MOTOR PRONTO! ADEUS SPLASH SCREEN!
+    // ==========================================
+    if (bsp_display_lock(pdMS_TO_TICKS(100))) {
+        // Transição suave para a tela do jogo e destrói a Splash!
+        lv_scr_load_anim(scr_game, LV_SCR_LOAD_ANIM_FADE_ON, 500, 0, true);
+        bsp_display_unlock();
+    }
+    
+    vTaskDelay(pdMS_TO_TICKS(600)); // Espera o Fade terminar
+
+    // ==========================================
+    // 6. LOOP DO JOGO
+    // ==========================================
     uint64_t next_frame_target_us = esp_timer_get_time();
 
     while (!emu_stop_requested) {

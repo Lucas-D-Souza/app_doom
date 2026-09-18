@@ -16,5 +16,5 @@
   ],
   "idf.flashType": "UART",
   "idf.portWin": "COM3",
-  "idf.port": "/dev/ttyACM1"
+  "idf.port": "/dev/ttyACM0"
 }

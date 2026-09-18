@@ -1,9 +1,11 @@
+file(GLOB icon_srcs "assets/icons/*.c")
 file(GLOB DOOM_SRCS "doomgeneric/*.c")
 
 idf_component_register(
     SRCS 
         "main.cpp"
         "SdUsbManager.cpp"
+        ${icon_srcs}
         ${DOOM_SRCS}
     INCLUDE_DIRS 
         "."
