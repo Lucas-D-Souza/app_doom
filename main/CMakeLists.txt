@@ -19,6 +19,7 @@ idf_component_register(
         esp_wifi 
         app_update 
         bsp_board_extra
+        json
     LDFRAGMENTS 
         "linker.lf"
 )

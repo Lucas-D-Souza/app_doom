@@ -15,9 +15,44 @@
 #include <unistd.h>
 #include "freertos/ringbuf.h"
 #include "bsp_board_extra.h"
+#include "cJSON.h"
+#include <string.h>
 
 LV_IMAGE_DECLARE(icon_doom); 
 static lv_obj_t * scr_splash = NULL;
+static lv_obj_t * lbl_splash_version = NULL;
+
+// ==========================================
+// FUNÇÃO PARA LER A VERSÃO ATUAL DO SD
+// ==========================================
+static void get_app_version_from_sd(const char* app_id, char* out_version, size_t max_len) {
+    strncpy(out_version, "0.0.0", max_len); // Versão padrão caso dê erro ou não encontre
+    FILE *vf = fopen("/sdcard/apps/versions.json", "r");
+    if (vf) {
+        fseek(vf, 0, SEEK_END);
+        long fsize = ftell(vf);
+        fseek(vf, 0, SEEK_SET);
+        if(fsize > 0) {
+            char *jstr = (char*)heap_caps_malloc(fsize + 1, MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
+            fread(jstr, 1, fsize, vf);
+            jstr[fsize] = 0;
+            char *ptr = jstr;
+            if ((unsigned char)ptr[0] == 0xEF && (unsigned char)ptr[1] == 0xBB) ptr += 3;
+            
+            cJSON *root = cJSON_Parse(ptr);
+            if (root) {
+                cJSON *ver_item = cJSON_GetObjectItem(root, app_id);
+                if (ver_item && ver_item->valuestring) {
+                    strncpy(out_version, ver_item->valuestring, max_len - 1);
+                    out_version[max_len - 1] = '\0';
+                }
+                cJSON_Delete(root);
+            }
+            heap_caps_free(jstr);
+        }
+        fclose(vf);
+    }
+}
 
 static void show_splash_screen(const char* version) {
     // 1. Cria a tela de Splash
@@ -37,11 +72,12 @@ static void show_splash_screen(const char* version) {
     lv_obj_align(logo, LV_ALIGN_CENTER, 0, -20); 
 
     // 3. Versão no rodapé
-    lv_obj_t * lbl_version = lv_label_create(scr_splash);
-    lv_label_set_text_fmt(lbl_version, "v%s", version);
-    lv_obj_set_style_text_font(lbl_version, &lv_font_montserrat_16, 0);
-    lv_obj_set_style_text_color(lbl_version, lv_color_hex(0x555555), 0); // Cinza discreto
-    lv_obj_align(lbl_version, LV_ALIGN_BOTTOM_MID, 0, -25);
+    // 5. Versão no rodapé
+    lbl_splash_version = lv_label_create(scr_splash);
+    lv_label_set_text_fmt(lbl_splash_version, "v%s", version);
+    lv_obj_set_style_text_font(lbl_splash_version, &lv_font_montserrat_16, 0);
+    lv_obj_set_style_text_color(lbl_splash_version, lv_color_hex(0x555555), 0); 
+    lv_obj_align(lbl_splash_version, LV_ALIGN_BOTTOM_MID, 0, -25);
 
     // 4. Joga imediatamente na tela sem animação
     lv_screen_load(scr_splash);
@@ -218,7 +254,7 @@ extern "C" void app_main(void) {
     
     // Mostra a Splash imediatamente
     if (bsp_display_lock(pdMS_TO_TICKS(100))) {
-        show_splash_screen("1.0.0");
+        show_splash_screen("...");
         bsp_display_unlock();
     }
     
@@ -241,6 +277,17 @@ extern "C" void app_main(void) {
     xTaskCreatePinnedToCore(audio_drain_task, "audio_drain", 4096, NULL, 5, NULL, 0);
 
     SdUsbManager::get_instance().init_local_storage();
+
+    // Lê a versão do JSON e atualiza a tela na mesma hora
+    char current_ver[16];
+    get_app_version_from_sd("updater", current_ver, sizeof(current_ver));
+    
+    if (bsp_display_lock(pdMS_TO_TICKS(100))) {
+        if(lbl_splash_version) {
+            lv_label_set_text_fmt(lbl_splash_version, "v%s", current_ver);
+        }
+        bsp_display_unlock();
+    }
 
     // ==========================================
     // 3. PREPARA A TELA DO JOGO INVISÍVEL
